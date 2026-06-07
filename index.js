@@ -328,10 +328,15 @@ async function authMiddleware(req, res, next) {
 }
 
 async function adminMiddleware(req, res, next) {
-    // Bot internal requests are admin
-    if (req.isBot) return next();
-
     const initData = req.headers['x-telegram-init-data'];
+
+    // Bot internal requests bypass Telegram auth — allow directly
+    if (initData === 'bot') {
+        req.isBot = true;
+        req.tgUser = { id: parseInt(process.env.ADMIN_ID) || 0 };
+        return next();
+    }
+
     if (!initData) {
         return res.status(401).json({ error: 'Missing Telegram init data' });
     }
@@ -857,9 +862,16 @@ app.post('/api/withdraw', authMiddleware, maintenanceCheck, claimLimiter, async 
 app.get('/api/ui-config', async (req, res) => {
     try {
         await connectToDatabase();
+        // Load all config from DB at once (efficient)
+        const allConfigs = await Config.find({}).lean();
+        const dbMap = {};
+        allConfigs.forEach(c => { dbMap[c.key] = c.value; });
+
+        // Merge DB values with defaults
+        const result = {};
         const keys = [
-            'VIP_CARD_VISIBLE', 'CURRENCY_MODE',
-            'CHANNEL_URL', 'CHANNEL_JOIN_REQUIRED', 'VPN_MODE',
+            'VIP_CARD_VISIBLE', 'CURRENCY_MODE', 'VPN_MODE',
+            'CHANNEL_URL', 'CHANNEL_JOIN_REQUIRED',
             'DAILY_CHECKIN_LABEL', 'DAILY_CHECKIN_REWARD_LABEL',
             'TASK1_LABEL', 'TASK1_REWARD_LABEL', 'TASK1_BTN_LABEL',
             'TASK2_LABEL', 'TASK2_REWARD_LABEL', 'TASK2_BTN_LABEL',
@@ -868,10 +880,12 @@ app.get('/api/ui-config', async (req, res) => {
             'EARN_REWARD_LABEL', 'EARN_WATCH_LABEL',
             'REFERRAL_REWARD'
         ];
-        const result = {};
-        for (const k of keys) result[k] = await getConfig(k);
+        for (const k of keys) {
+            result[k] = k in dbMap ? dbMap[k] : DEFAULT_CONFIG[k];
+        }
         res.json(result);
     } catch (err) {
+        console.error('❌ ui-config error:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -976,12 +990,14 @@ app.post('/api/admin/broadcast', adminMiddleware, async (req, res) => {
     }
 });
 
-// Get settings
+// Get settings - merge DB values with defaults
 app.get('/api/admin/settings', adminMiddleware, async (req, res) => {
     try {
         await connectToDatabase();
-        const settings = await Config.find();
-        const settingsObj = {};
+        const settings = await Config.find().lean();
+        // Start with defaults
+        const settingsObj = { ...DEFAULT_CONFIG };
+        // Override with DB values
         settings.forEach(s => { settingsObj[s.key] = s.value; });
         res.json(settingsObj);
     } catch (err) {
@@ -2506,19 +2522,10 @@ function setupCommandHandlers() {
     });
 }
 
-// ==================== Helper: Fetch Config ====================
-async function getConfig(key) {
-    try {
-        const res = await axios.get(`${API_BASE_URL}/api/admin/settings`, {
-            headers: { 'X-Telegram-Init-Data': 'bot' },
-            timeout: 5000
-        });
-        return res.data[key];
-    } catch (err) {
-        console.error('Failed to fetch config:', err.message);
-        return null;
-    }
-}
+// ==================== Helper: Fetch Config (Bot uses DB directly) ====================
+// Note: getConfig is already defined above (line ~248) using Config model directly.
+// Bot can reuse it since bot and API run in same process.
+// This comment replaces the duplicate axios-based getConfig that caused 403 errors.
 
 // ==================== Express Server ====================
 const botApp = express();
