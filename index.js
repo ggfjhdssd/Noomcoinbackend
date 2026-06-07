@@ -359,9 +359,10 @@ async function adminMiddleware(req, res, next) {
 // ==================== UPDATED: maintenanceCheck with Bypass ====================
 async function maintenanceCheck(req, res, next) {
     const maintenance = await getConfig('MAINTENANCE_MODE');
+    const isOn = maintenance === true || maintenance === 'true';
     
     // If maintenance mode is off, proceed
-    if (!maintenance) {
+    if (!isOn) {
         return next();
     }
     
@@ -430,11 +431,12 @@ async function getOrCreateUser(tgUser, referrerId = null) {
         if (referrerId && parseInt(referrerId) !== tgUser.id) {
             const referrer = await User.findOne({ userId: parseInt(referrerId) });
             if (referrer) {
-                referrer.coins += 50;
+                const refReward = await getConfig('REFERRAL_REWARD');
+                referrer.coins += Number(refReward) || 50;
                 referrer.referralCount += 1;
                 referrer.unclaimedReferrals += 1;
                 await referrer.save();
-                console.log(`✅ Referrer ${referrer.userId} got +50 coins, referral count: ${referrer.referralCount}`);
+                console.log(`✅ Referrer ${referrer.userId} got +${refReward} coins, referral count: ${referrer.referralCount}`);
 
                 if (process.env.RENDER_BOT_URL) {
                     axios.post(`${process.env.RENDER_BOT_URL}/referral-notify`, {
@@ -809,6 +811,51 @@ app.get('/api/adsgram-reward', async (req, res) => {
     }
 });
 
+// ==================== POST Adsgram Reward (used by frontend JS) ====================
+app.post('/api/adsgram-reward', authMiddleware, maintenanceCheck, async (req, res) => {
+    try {
+        await connectToDatabase();
+        const { type, taskId } = req.body;
+        const user = await getOrCreateUser(req.tgUser);
+        if (user.banned) return res.status(403).json({ error: 'Banned' });
+
+        const now = Date.now();
+        let reward = 0;
+
+        if (type === 'daily') {
+            const cooldown = await getConfig('DAILY_COOLDOWN');
+            if (now - (user.dailyLastClaim || 0) < cooldown) {
+                const remaining = cooldown - (now - (user.dailyLastClaim || 0));
+                return res.status(400).json({ error: 'Cooldown active', remaining });
+            }
+            reward = Number(await getConfig('DAILY_REWARD')) || 24;
+            user.dailyLastClaim = now;
+        } else if (type === 'home_task') {
+            if (!taskId || !['task1','task2','task3','task4'].includes(taskId)) {
+                return res.status(400).json({ error: 'Invalid taskId' });
+            }
+            const cooldown = await getConfig('TASK_COOLDOWN');
+            const lastClaim = user.tasks.get(taskId) || 0;
+            if (now - lastClaim < cooldown - 5000) {
+                const remaining = cooldown - (now - lastClaim);
+                return res.status(400).json({ error: 'Cooldown active', remaining });
+            }
+            reward = Number(await getConfig('HOME_TASK_REWARD')) || 45;
+            user.tasks.set(taskId, now);
+        } else {
+            return res.status(400).json({ error: 'Invalid type' });
+        }
+
+        user.coins += reward;
+        await user.save();
+        console.log(`✅ POST adsgram-reward: User ${user.userId} +${reward} coins (${type})`);
+        res.json({ success: true, reward, newCoins: user.coins });
+    } catch (err) {
+        console.error('❌ POST adsgram-reward error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ==================== Withdrawal ====================
 app.post('/api/withdraw', authMiddleware, maintenanceCheck, claimLimiter, async (req, res) => {
     try {
@@ -859,7 +906,7 @@ app.get('/api/ui-config', async (req, res) => {
             'TASK3_LABEL', 'TASK3_REWARD_LABEL', 'TASK3_BTN_LABEL',
             'TASK4_LABEL', 'TASK4_REWARD_LABEL', 'TASK4_BTN_LABEL',
             'EARN_REWARD_LABEL', 'EARN_WATCH_LABEL',
-            'REFERRAL_REWARD'
+            'REFERRAL_REWARD', 'MIN_WITHDRAWAL', 'DAILY_REWARD', 'TASK_REWARD', 'HOME_TASK_REWARD'
         ];
         const result = {};
         for (const k of keys) result[k] = await getConfig(k);
@@ -1667,7 +1714,7 @@ R.post('/video', async (req, res) => {
 
         const cfg = VIDEO_TASK_LIMITS[taskId];
         const liveReward = await getEarnTaskReward();
-        if (amount !== liveReward) return res.status(400).json({ error: 'Invalid reward amount' });
+        // amount check removed — reward is determined server-side
 
         const User = mongoose.model('User');
         const user = await User.findOne({ userId: req.tgUser.id });
