@@ -18,7 +18,7 @@ app.use(cors({
     origin: (origin, callback) => callback(null, true), // Allow all origins (Telegram WebApp)
     /*
     origin: [
-        'https://noomcoin-frontend.vercel.app',
+        'https://noomcoin.vercel.app',
         'http://localhost:3000'
     ],
     */
@@ -215,7 +215,7 @@ const DEFAULT_CONFIG = {
     MIN_WITHDRAWAL: parseInt(process.env.MIN_WITHDRAWAL) || 100000,
     TASK_COOLDOWN: 15 * 60 * 1000, // 15 minutes
     DAILY_COOLDOWN: 24 * 60 * 60 * 1000,
-    CHANNEL_URL: 'https://t.me/NoomCoin',
+    CHANNEL_URL: 'https://t.me/NoomCoinads_bot',
     CHANNEL_JOIN_REQUIRED: true,
     VPN_MODE: true, // true = VPN gate on, false = bypass VPN check
     MAINTENANCE_MODE: false,
@@ -1095,12 +1095,12 @@ const axios = require('axios');
 
 // ==================== Configuration ====================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const WEB_APP_URL = 'https://noomcoin-frontend.vercel.app';
-const ADMIN_PANEL_URL = 'https://noomcoin-frontend.vercel.app/admin.html';
+const WEB_APP_URL = 'https://noomcoin.vercel.app';
+const ADMIN_PANEL_URL = 'https://noomcoin.vercel.app/admin.html';
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
-const API_BASE_URL = process.env.API_BASE_URL || 'https://noomcoin-backend.onrender.com';
+const API_BASE_URL = process.env.API_BASE_URL || 'https://noomcoinbackend.onrender.com';
 const SUPPORT_GROUP_ID = -1003748580479;
-const SUPPORT_LINK = 'https://t.me/NoomCoinMM';
+const SUPPORT_LINK = 'https://t.me/NoomCoinads_bot';
 
 if (!BOT_TOKEN || !ADMIN_ID) {
     console.error('❌ Missing Environment Variables!');
@@ -1112,7 +1112,7 @@ let bot;
 let isPolling = false;
 let restartAttempts = 0;
 const MAX_RESTART_ATTEMPTS = 5;
-let CHANNEL_URL = 'https://t.me/NoomCoin';
+let CHANNEL_URL = 'https://t.me/NoomCoinads_bot';
 let CHANNEL_JOIN_REQUIRED = true; // Admin can toggle with /off and /on
 
 // ==================== Force clear webhook ====================

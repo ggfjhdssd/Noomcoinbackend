@@ -1,30 +1,30 @@
-# ═══════════════════════════════════════════
-#  render.yaml — NoomCoin Backend
-#  Deploy: Render Web Service
-# ═══════════════════════════════════════════
+# ══════════════════════════════════════════════════════
+#  render.yaml — NoomCoin Backend + Bot (Single Service)
+#  Upload this folder to GitHub → connect to Render
+# ══════════════════════════════════════════════════════
 services:
   - type: web
-    name: noomcoin-backend
+    name: noomcoinbackend
     env: node
-    region: singapore          # Myanmar နဲ့ အနီးဆုံး region
+    region: singapore
     plan: free
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /api/health
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
-      # ── Required secrets (set in Render dashboard) ──
-      - key: MONGODB_URI
-        sync: false            # Render dashboard မှာ ထည့်ပါ
-      - key: BOT_TOKEN
-        sync: false            # BotFather ကနေ ရသော token
-      - key: ADMIN_ID
-        sync: false            # Admin Telegram user ID
-      # ── Optional ──
-      - key: RENDER_BOT_URL
-        value: https://noomcoin-backend.onrender.com
-      - key: MIN_WITHDRAWAL
-        value: "100000"
       - key: PORT
         value: "10000"
+      - key: RENDER_BOT_URL
+        value: https://noomcoinbackend.onrender.com
+      # ── Set these in Render Dashboard → Environment ──
+      - key: MONGODB_URI
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: MIN_WITHDRAWAL
+        value: "100000"
