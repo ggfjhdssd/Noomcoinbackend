@@ -297,35 +297,62 @@ function validateTelegramData(initData) {
 }
 
 async function authMiddleware(req, res, next) {
+    // Bot internal requests bypass auth
     if (req.headers['x-telegram-init-data'] === 'bot') {
         req.isBot = true;
+        req.tgUser = { id: parseInt(process.env.ADMIN_ID) || 0 };
         return next();
     }
 
     const initData = req.headers['x-telegram-init-data'];
-    if (!initData) return res.status(401).json({ error: 'Missing init data' });
+    if (!initData) {
+        return res.status(401).json({ error: 'Missing Telegram init data' });
+    }
+
     const userData = validateTelegramData(initData);
-    if (!userData || !userData.user) return res.status(403).json({ error: 'Invalid init data' });
+    if (!userData || !userData.user) {
+        return res.status(403).json({ error: 'Invalid Telegram init data' });
+    }
+
     try {
         req.tgUser = JSON.parse(userData.user);
+        if (!req.tgUser || !req.tgUser.id) {
+            return res.status(403).json({ error: 'Invalid user data structure' });
+        }
         next();
     } catch (err) {
-        console.error('Error parsing user data:', err);
-        return res.status(403).json({ error: 'Invalid user data' });
+        console.error('authMiddleware parse error:', err);
+        return res.status(403).json({ error: 'Failed to parse user data' });
     }
 }
 
 async function adminMiddleware(req, res, next) {
-    if (req.isBot) {
-        return next();
+    // Bot internal requests are admin
+    if (req.isBot) return next();
+
+    const initData = req.headers['x-telegram-init-data'];
+    if (!initData) {
+        return res.status(401).json({ error: 'Missing Telegram init data' });
     }
-    await authMiddleware(req, res, (err) => {
-        if (err) return;
+
+    const userData = validateTelegramData(initData);
+    if (!userData || !userData.user) {
+        return res.status(403).json({ error: 'Invalid Telegram init data' });
+    }
+
+    try {
+        req.tgUser = JSON.parse(userData.user);
+        if (!req.tgUser || !req.tgUser.id) {
+            return res.status(403).json({ error: 'Invalid user data structure' });
+        }
         if (!isAdmin(req.tgUser.id)) {
             return res.status(403).json({ error: 'Admin access required' });
         }
         next();
-    });
+    } catch (err) {
+        console.error('adminMiddleware error:', err);
+        return res.status(500).json({ error: 'Auth error: ' + err.message });
+    }
 }
 
 // ==================== UPDATED: maintenanceCheck with Bypass ====================
@@ -1207,27 +1234,7 @@ app.get('/api/admin/users', adminMiddleware, async (req, res) => {
     }
 });
 
-// ==================== MOUNT EARN ROUTES ====================
-console.log('📦 Loading earn routes from ../routes/earn...');
-try {
-    const earnRouter = require('../routes/earn');
-    console.log('✅ earn.js loaded successfully');
-    app.use('/api/earn', authMiddleware, maintenanceCheck, earnRouter);
-    console.log('✅ Earn routes mounted at /api/earn');
-} catch (err) {
-    console.error('❌ Failed to load earn.js:', err.message);
-}
-
-// ==================== MOUNT GAME ROUTES ====================
-console.log('📦 Loading game routes from ../routes/games...');
-try {
-    const gameRouter = require('../routes/games');
-    console.log('✅ games.js loaded successfully');
-    app.use('/api/games', authMiddleware, maintenanceCheck, gameRouter);
-    console.log('✅ Game routes mounted at /api/games');
-} catch (err) {
-    console.error('❌ Failed to load games.js:', err.message);
-}
+// Earn & Games routes are inlined below
 
 // ==================== Initialize ====================
 connectToDatabase()
