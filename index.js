@@ -165,7 +165,8 @@ const userSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },
     banned: { type: Boolean, default: false },
     isBypassed: { type: Boolean, default: false }, // NEW: VIP Bypass
-    spinTickets: { type: Number, default: 1 },
+    spinTickets: { type: Number, default: 0 },
+    hasReceivedFreeTicket: { type: Boolean, default: false },
     adWatchCount: { type: Number, default: 0 },
     lastAdWatch: { type: Number, default: 0 },
     adCooldownEndTime: { type: Number, default: 0 },
@@ -414,6 +415,7 @@ async function getOrCreateUser(tgUser, referrerId = null) {
             banned: false,
             isBypassed: false, // NEW: default false
             spinTickets: 1,
+            hasReceivedFreeTicket: true,
             adWatchCount: 0,
             lastAdWatch: 0,
             adCooldownEndTime: 0,
@@ -499,6 +501,14 @@ async function notifyBot(endpoint, data) {
 // ==================== UPDATED: VPN CHECK API with Bypass ====================
 app.get('/api/check-vpn', async (req, res) => {
     try {
+        await connectToDatabase();
+        // Check VPN_MODE setting from DB
+        const vpnSetting = await Config.findOne({ key: "VPN_MODE" });
+        const vpnMode = vpnSetting ? vpnSetting.value : true;
+        if (vpnMode === false || vpnMode === "false") {
+            return res.json({ allowed: true, country: "Bypassed", isAdmin: false, isBypassed: false, message: "VPN mode off" });
+        }
+
         // Get client IP
         const clientIp = req.headers['x-forwarded-for']?.split(',')[0] || 
                          req.socket.remoteAddress || 
@@ -938,8 +948,29 @@ app.post('/api/admin/broadcast', adminMiddleware, async (req, res) => {
         if (!message || message.trim() === '') {
             return res.status(400).json({ error: 'Message is required' });
         }
-        await notifyBot('/broadcast', { message });
-        res.json({ success: true, message: 'Broadcast started. Check bot logs for progress.' });
+        res.json({ success: true, message: 'Broadcast started.' });
+        // Run broadcast async in background
+        (async () => {
+            try {
+                await connectToDatabase();
+                const users = await User.find({ banned: { $ne: true } }).select('userId').lean();
+                console.log(`📢 Broadcasting to ${users.length} users...`);
+                let ok = 0, fail = 0;
+                for (let i = 0; i < users.length; i += 30) {
+                    const batch = users.slice(i, i + 30);
+                    await Promise.all(batch.map(async (u) => {
+                        try {
+                            if (bot && isPolling) {
+                                await bot.sendMessage(u.userId, message, { parse_mode: 'HTML' });
+                                ok++;
+                            }
+                        } catch(e) { fail++; }
+                    }));
+                    if (i + 30 < users.length) await new Promise(r => setTimeout(r, 1500));
+                }
+                console.log(`✅ Broadcast done. OK: ${ok}, Failed: ${fail}`);
+            } catch(e) { console.error('Broadcast error:', e.message); }
+        })();
     } catch (err) {
         console.error('❌ Error in /api/admin/broadcast:', err);
         res.status(500).json({ error: 'Failed to start broadcast: ' + err.message });
@@ -1125,13 +1156,14 @@ app.post('/api/admin/users/:userId/tasks/reset', adminMiddleware, async (req, re
     try {
         await connectToDatabase();
         const targetId = parseInt(req.params.userId);
-        const user = await User.findOneAndUpdate(
-            { userId: targetId },
-            { $set: { tasks: {} } },
-            { new: true }
-        );
+        const user = await User.findOne({ userId: targetId });
         if (!user) return res.status(404).json({ error: 'User not found' });
-
+        user.tasks = new Map();
+        user.videoTasks = new Map();
+        user.dailyLastClaim = 0;
+        user.dailyVideoCount = 0;
+        user.lastVideoDate = null;
+        await user.save();
         res.json({ success: true });
     } catch (err) {
         console.error('❌ Error resetting tasks:', err);
@@ -1789,15 +1821,17 @@ const userSchema = new mongoose.Schema({
 const User = mongoose.models.User || mongoose.model('User', userSchema);
 
 // ==================== Spin Wheel Prizes ====================
+// Prizes: 8 segments — index matches wheel segment order
+// Segment order (clockwise from top): 10, 20, 50, 70, 85, 100, Free, TryAgain
 const PRIZES = [
-    { name: '200 coins', value: 200, type: 'coin', probability: 2 },
-    { name: '20 coins', value: 20, type: 'coin', probability: 23 },
-    { name: '15 coins', value: 15, type: 'coin', probability: 10 },
-    { name: 'Try Again', value: 0, type: 'tryagain', probability: 20 },
-    { name: 'Free Spin', value: 1, type: 'freespin', probability: 5 },
-    { name: '100 coins', value: 100, type: 'coin', probability: 5 },
-    { name: '50 coins', value: 50, type: 'coin', probability: 10 },
-    { name: '30 coins', value: 30, type: 'coin', probability: 25 }
+    { name: '10 coins',  value: 10,  type: 'coin',     probability: 25 }, // index 0
+    { name: '20 coins',  value: 20,  type: 'coin',     probability: 20 }, // index 1
+    { name: '50 coins',  value: 50,  type: 'coin',     probability: 15 }, // index 2
+    { name: '70 coins',  value: 70,  type: 'coin',     probability: 12 }, // index 3
+    { name: '85 coins',  value: 85,  type: 'coin',     probability: 10 }, // index 4
+    { name: '100 coins', value: 100, type: 'coin',     probability: 8  }, // index 5
+    { name: 'Free Spin', value: 1,   type: 'freespin', probability: 5  }, // index 6
+    { name: 'Try Again', value: 0,   type: 'tryagain', probability: 5  }  // index 7
 ];
 
 // ==================== Constants ====================
@@ -1947,6 +1981,28 @@ R.post('/claim-ticket', async (req, res) => {
 });
 
 // ==================== GET /api/games/ad-status ====================
+// ==================== GET /api/games/wheel-status (combined) ====================
+R.get('/wheel-status', async (req, res) => {
+    try {
+        const user = await User.findOne({ userId: req.tgUser.id });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        const now = Date.now();
+        const claimableReferralTickets = Math.floor((user.unclaimedReferrals || 0) / 5);
+        res.json({
+            success: true,
+            spinTickets: user.spinTickets || 0,
+            adWatchCount: user.adWatchCount || 0,
+            adCooldownEndTime: user.adCooldownEndTime || 0,
+            claimableReferralTickets,
+            totalReferrals: user.referralCount || 0,
+            unclaimedReferrals: user.unclaimedReferrals || 0,
+            serverTime: now
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 R.get('/ad-status', async (req, res) => {
     try {
         const user = await User.findOne({ userId: req.tgUser.id });
