@@ -1,0 +1,30 @@
+# ═══════════════════════════════════════════
+#  render.yaml — NoomCoin Backend
+#  Deploy: Render Web Service
+# ═══════════════════════════════════════════
+services:
+  - type: web
+    name: noomcoin-backend
+    env: node
+    region: singapore          # Myanmar နဲ့ အနီးဆုံး region
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # ── Required secrets (set in Render dashboard) ──
+      - key: MONGODB_URI
+        sync: false            # Render dashboard မှာ ထည့်ပါ
+      - key: BOT_TOKEN
+        sync: false            # BotFather ကနေ ရသော token
+      - key: ADMIN_ID
+        sync: false            # Admin Telegram user ID
+      # ── Optional ──
+      - key: RENDER_BOT_URL
+        value: https://noomcoin-backend.onrender.com
+      - key: MIN_WITHDRAWAL
+        value: "100000"
+      - key: PORT
+        value: "10000"
