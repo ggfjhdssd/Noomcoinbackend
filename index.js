@@ -359,10 +359,9 @@ async function adminMiddleware(req, res, next) {
 // ==================== UPDATED: maintenanceCheck with Bypass ====================
 async function maintenanceCheck(req, res, next) {
     const maintenance = await getConfig('MAINTENANCE_MODE');
-    const isOn = maintenance === true || maintenance === 'true';
     
     // If maintenance mode is off, proceed
-    if (!isOn) {
+    if (!maintenance) {
         return next();
     }
     
@@ -415,8 +414,8 @@ async function getOrCreateUser(tgUser, referrerId = null) {
             createdAt: Date.now(),
             banned: false,
             isBypassed: false, // NEW: default false
-            spinTickets: 1,
-            hasReceivedFreeTicket: true,
+            spinTickets: 0,
+                hasReceivedFreeTicket: false,
             adWatchCount: 0,
             lastAdWatch: 0,
             adCooldownEndTime: 0,
@@ -431,12 +430,11 @@ async function getOrCreateUser(tgUser, referrerId = null) {
         if (referrerId && parseInt(referrerId) !== tgUser.id) {
             const referrer = await User.findOne({ userId: parseInt(referrerId) });
             if (referrer) {
-                const refReward = await getConfig('REFERRAL_REWARD');
-                referrer.coins += Number(refReward) || 50;
+                referrer.coins += 50;
                 referrer.referralCount += 1;
                 referrer.unclaimedReferrals += 1;
                 await referrer.save();
-                console.log(`✅ Referrer ${referrer.userId} got +${refReward} coins, referral count: ${referrer.referralCount}`);
+                console.log(`✅ Referrer ${referrer.userId} got +50 coins, referral count: ${referrer.referralCount}`);
 
                 if (process.env.RENDER_BOT_URL) {
                     axios.post(`${process.env.RENDER_BOT_URL}/referral-notify`, {
@@ -503,12 +501,11 @@ async function notifyBot(endpoint, data) {
 // ==================== UPDATED: VPN CHECK API with Bypass ====================
 app.get('/api/check-vpn', async (req, res) => {
     try {
-        await connectToDatabase();
-        // Check VPN_MODE setting from DB
-        const vpnSetting = await Config.findOne({ key: "VPN_MODE" });
-        const vpnMode = vpnSetting ? vpnSetting.value : true;
-        if (vpnMode === false || vpnMode === "false") {
-            return res.json({ allowed: true, country: "Bypassed", isAdmin: false, isBypassed: false, message: "VPN mode off" });
+        // Check if VPN mode is disabled via admin config
+        const vpnRequired = await getConfig('VPN_MODE');
+        if (vpnRequired === false) {
+            return res.json({ allowed: true, country: 'Bypassed', countryCode: 'ANY',
+                isAdmin: false, isBypassed: false, message: 'VPN check disabled by admin' });
         }
 
         // Get client IP
@@ -655,6 +652,14 @@ app.get('/api/user', authMiddleware, maintenanceCheck, async (req, res) => {
         
         const user = await getOrCreateUser(req.tgUser, referrerId);
         if (user.banned) return res.status(403).json({ error: 'Your account is banned' });
+
+        // 🎟️ First-time free spin ticket
+        if (!user.hasReceivedFreeTicket) {
+            user.spinTickets = (user.spinTickets || 0) + 1;
+            user.hasReceivedFreeTicket = true;
+            await user.save();
+            console.log(`🎟️ First free spin ticket given to user ${user.userId}`);
+        }
 
         const displayName = user.username || user.firstName || `User${user.userId}`;
 
@@ -811,51 +816,6 @@ app.get('/api/adsgram-reward', async (req, res) => {
     }
 });
 
-// ==================== POST Adsgram Reward (used by frontend JS) ====================
-app.post('/api/adsgram-reward', authMiddleware, maintenanceCheck, async (req, res) => {
-    try {
-        await connectToDatabase();
-        const { type, taskId } = req.body;
-        const user = await getOrCreateUser(req.tgUser);
-        if (user.banned) return res.status(403).json({ error: 'Banned' });
-
-        const now = Date.now();
-        let reward = 0;
-
-        if (type === 'daily') {
-            const cooldown = await getConfig('DAILY_COOLDOWN');
-            if (now - (user.dailyLastClaim || 0) < cooldown) {
-                const remaining = cooldown - (now - (user.dailyLastClaim || 0));
-                return res.status(400).json({ error: 'Cooldown active', remaining });
-            }
-            reward = Number(await getConfig('DAILY_REWARD')) || 24;
-            user.dailyLastClaim = now;
-        } else if (type === 'home_task') {
-            if (!taskId || !['task1','task2','task3','task4'].includes(taskId)) {
-                return res.status(400).json({ error: 'Invalid taskId' });
-            }
-            const cooldown = await getConfig('TASK_COOLDOWN');
-            const lastClaim = user.tasks.get(taskId) || 0;
-            if (now - lastClaim < cooldown - 5000) {
-                const remaining = cooldown - (now - lastClaim);
-                return res.status(400).json({ error: 'Cooldown active', remaining });
-            }
-            reward = Number(await getConfig('HOME_TASK_REWARD')) || 45;
-            user.tasks.set(taskId, now);
-        } else {
-            return res.status(400).json({ error: 'Invalid type' });
-        }
-
-        user.coins += reward;
-        await user.save();
-        console.log(`✅ POST adsgram-reward: User ${user.userId} +${reward} coins (${type})`);
-        res.json({ success: true, reward, newCoins: user.coins });
-    } catch (err) {
-        console.error('❌ POST adsgram-reward error:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // ==================== Withdrawal ====================
 app.post('/api/withdraw', authMiddleware, maintenanceCheck, claimLimiter, async (req, res) => {
     try {
@@ -906,7 +866,7 @@ app.get('/api/ui-config', async (req, res) => {
             'TASK3_LABEL', 'TASK3_REWARD_LABEL', 'TASK3_BTN_LABEL',
             'TASK4_LABEL', 'TASK4_REWARD_LABEL', 'TASK4_BTN_LABEL',
             'EARN_REWARD_LABEL', 'EARN_WATCH_LABEL',
-            'REFERRAL_REWARD', 'MIN_WITHDRAWAL', 'DAILY_REWARD', 'TASK_REWARD', 'HOME_TASK_REWARD'
+            'REFERRAL_REWARD'
         ];
         const result = {};
         for (const k of keys) result[k] = await getConfig(k);
@@ -988,39 +948,31 @@ app.get('/api/top-referrers', async (req, res) => {
 
 // ==================== GALAXY ADMIN ROUTES ====================
 
-// Broadcast
+// Broadcast - directly via bot instance
 app.post('/api/admin/broadcast', adminMiddleware, async (req, res) => {
     try {
+        await connectToDatabase();
         const { message } = req.body;
         if (!message || message.trim() === '') {
             return res.status(400).json({ error: 'Message is required' });
         }
-        res.json({ success: true, message: 'Broadcast started.' });
-        // Run broadcast async in background
-        (async () => {
+        const users = await User.find({ banned: false }, { userId: 1 });
+        res.json({ success: true, totalUsers: users.length, message: 'Broadcast sending...' });
+        // Send in background after response
+        let sent = 0, failed = 0;
+        for (const u of users) {
             try {
-                await connectToDatabase();
-                const users = await User.find({ banned: { $ne: true } }).select('userId').lean();
-                console.log(`📢 Broadcasting to ${users.length} users...`);
-                let ok = 0, fail = 0;
-                for (let i = 0; i < users.length; i += 30) {
-                    const batch = users.slice(i, i + 30);
-                    await Promise.all(batch.map(async (u) => {
-                        try {
-                            if (bot && isPolling) {
-                                await bot.sendMessage(u.userId, message, { parse_mode: 'HTML' });
-                                ok++;
-                            }
-                        } catch(e) { fail++; }
-                    }));
-                    if (i + 30 < users.length) await new Promise(r => setTimeout(r, 1500));
+                if (typeof bot !== 'undefined' && bot) {
+                    await bot.sendMessage(u.userId, message, { parse_mode: 'Markdown' });
+                    sent++;
                 }
-                console.log(`✅ Broadcast done. OK: ${ok}, Failed: ${fail}`);
-            } catch(e) { console.error('Broadcast error:', e.message); }
-        })();
+                await new Promise(r => setTimeout(r, 60));
+            } catch (e) { failed++; }
+        }
+        console.log(`📢 Broadcast done: sent=${sent} failed=${failed}`);
     } catch (err) {
-        console.error('❌ Error in /api/admin/broadcast:', err);
-        res.status(500).json({ error: 'Failed to start broadcast: ' + err.message });
+        console.error('❌ Broadcast error:', err);
+        // res already sent above if users found
     }
 });
 
@@ -1044,7 +996,15 @@ app.post('/api/admin/settings', adminMiddleware, async (req, res) => {
         await connectToDatabase();
         const updates = req.body;
         for (const [key, value] of Object.entries(updates)) {
-            await setConfig(key, value);
+            // Convert boolean strings to actual booleans
+            let val = value;
+            if (val === 'true') val = true;
+            if (val === 'false') val = false;
+            await setConfig(key, val);
+        }
+        // If VPN_MODE changed, update in-memory cache
+        if ('VPN_MODE' in updates) {
+            console.log(`🔒 VPN_MODE set to: ${updates.VPN_MODE}`);
         }
         res.json({ success: true });
     } catch (err) {
@@ -1203,14 +1163,13 @@ app.post('/api/admin/users/:userId/tasks/reset', adminMiddleware, async (req, re
     try {
         await connectToDatabase();
         const targetId = parseInt(req.params.userId);
-        const user = await User.findOne({ userId: targetId });
+        const user = await User.findOneAndUpdate(
+            { userId: targetId },
+            { $set: { tasks: {} } },
+            { new: true }
+        );
         if (!user) return res.status(404).json({ error: 'User not found' });
-        user.tasks = new Map();
-        user.videoTasks = new Map();
-        user.dailyLastClaim = 0;
-        user.dailyVideoCount = 0;
-        user.lastVideoDate = null;
-        await user.save();
+
         res.json({ success: true });
     } catch (err) {
         console.error('❌ Error resetting tasks:', err);
@@ -1714,7 +1673,7 @@ R.post('/video', async (req, res) => {
 
         const cfg = VIDEO_TASK_LIMITS[taskId];
         const liveReward = await getEarnTaskReward();
-        // amount check removed — reward is determined server-side
+        if (amount !== liveReward) return res.status(400).json({ error: 'Invalid reward amount' });
 
         const User = mongoose.model('User');
         const user = await User.findOne({ userId: req.tgUser.id });
@@ -1854,7 +1813,8 @@ const userSchema = new mongoose.Schema({
     unclaimedReferrals: { type: Number, default: 0 },
     createdAt: { type: Date, default: Date.now },
     banned: { type: Boolean, default: false },
-    spinTickets: { type: Number, default: 1 },
+    spinTickets: { type: Number, default: 0 },
+    hasReceivedFreeTicket: { type: Boolean, default: false },
     adWatchCount: { type: Number, default: 0 },
     lastAdWatch: { type: Number, default: 0 },
     adCooldownEndTime: { type: Number, default: 0 },
@@ -1868,17 +1828,17 @@ const userSchema = new mongoose.Schema({
 const User = mongoose.models.User || mongoose.model('User', userSchema);
 
 // ==================== Spin Wheel Prizes ====================
-// Prizes: 8 segments — index matches wheel segment order
-// Segment order (clockwise from top): 10, 20, 50, 70, 85, 100, Free, TryAgain
+// Prizes: index 0-7 maps exactly to wheel segments 0-7 (clockwise from top)
+// Segments: 10, 20, 50, 70, 85, 100, Free, TryAgain
 const PRIZES = [
-    { name: '10 coins',  value: 10,  type: 'coin',     probability: 25 }, // index 0
-    { name: '20 coins',  value: 20,  type: 'coin',     probability: 20 }, // index 1
-    { name: '50 coins',  value: 50,  type: 'coin',     probability: 15 }, // index 2
-    { name: '70 coins',  value: 70,  type: 'coin',     probability: 12 }, // index 3
-    { name: '85 coins',  value: 85,  type: 'coin',     probability: 10 }, // index 4
-    { name: '100 coins', value: 100, type: 'coin',     probability: 8  }, // index 5
-    { name: 'Free Spin', value: 1,   type: 'freespin', probability: 5  }, // index 6
-    { name: 'Try Again', value: 0,   type: 'tryagain', probability: 5  }  // index 7
+    { name: '10 coins',  value: 10,  type: 'coin',     probability: 25 },
+    { name: '20 coins',  value: 20,  type: 'coin',     probability: 22 },
+    { name: '50 coins',  value: 50,  type: 'coin',     probability: 18 },
+    { name: '70 coins',  value: 70,  type: 'coin',     probability: 12 },
+    { name: '85 coins',  value: 85,  type: 'coin',     probability: 8  },
+    { name: '100 coins', value: 100, type: 'coin',     probability: 5  },
+    { name: 'Free Spin', value: 1,   type: 'freespin', probability: 5  },
+    { name: 'Try Again', value: 0,   type: 'tryagain', probability: 5  }
 ];
 
 // ==================== Constants ====================
@@ -2028,28 +1988,6 @@ R.post('/claim-ticket', async (req, res) => {
 });
 
 // ==================== GET /api/games/ad-status ====================
-// ==================== GET /api/games/wheel-status (combined) ====================
-R.get('/wheel-status', async (req, res) => {
-    try {
-        const user = await User.findOne({ userId: req.tgUser.id });
-        if (!user) return res.status(404).json({ error: 'User not found' });
-        const now = Date.now();
-        const claimableReferralTickets = Math.floor((user.unclaimedReferrals || 0) / 5);
-        res.json({
-            success: true,
-            spinTickets: user.spinTickets || 0,
-            adWatchCount: user.adWatchCount || 0,
-            adCooldownEndTime: user.adCooldownEndTime || 0,
-            claimableReferralTickets,
-            totalReferrals: user.referralCount || 0,
-            unclaimedReferrals: user.unclaimedReferrals || 0,
-            serverTime: now
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
 R.get('/ad-status', async (req, res) => {
     try {
         const user = await User.findOne({ userId: req.tgUser.id });
@@ -2158,6 +2096,36 @@ R.post('/coin-end', async (req, res) => {
     }
 });
 
+
+        // ==================== COIN CLICKER ====================
+        R.post('/clicker-cashout', async (req, res) => {
+            try {
+                await connectToDatabase();
+                const { coins } = req.body;
+                if (!coins || coins <= 0 || coins > 5000) {
+                    return res.status(400).json({ error: 'Invalid coin amount (max 5000 per session)' });
+                }
+                const user = await User.findOne({ userId: req.tgUser.id });
+                if (!user) return res.status(404).json({ error: 'User not found' });
+                user.coins += Math.floor(coins);
+                await user.save();
+                res.json({ success: true, coinsAdded: Math.floor(coins), newTotal: user.coins });
+            } catch (err) { res.status(500).json({ error: err.message }); }
+        });
+
+        R.post('/clicker-upgrade', async (req, res) => {
+            try {
+                await connectToDatabase();
+                const { cost } = req.body;
+                if (!cost || cost <= 0) return res.status(400).json({ error: 'Invalid cost' });
+                const user = await User.findOne({ userId: req.tgUser.id });
+                if (!user) return res.status(404).json({ error: 'User not found' });
+                if (user.coins < cost) return res.status(400).json({ error: 'Not enough coins' });
+                user.coins -= Math.floor(cost);
+                await user.save();
+                res.json({ success: true, newCoins: user.coins });
+            } catch (err) { res.status(500).json({ error: err.message }); }
+        });
 
     return R;
 })();
