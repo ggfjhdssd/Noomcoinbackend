@@ -2281,9 +2281,11 @@ function setupCommandHandlers() {
             [{ text: '🎮 Play Game', web_app: { url: webAppUrl } }]
         ];
         if (CHANNEL_JOIN_REQUIRED) {
+            // Join check ON: ပြည့်စုံတဲ့ buttons သုံးခု
             rows.push([{ text: '📢 Join Channel', url: CHANNEL_URL }]);
+            rows.push([{ text: '💬 Admin ကိုဆက်သွယ်ရန်', url: SUPPORT_LINK }]);
         }
-        rows.push([{ text: '💬 Admin ကိုဆက်သွယ်ရန်', url: SUPPORT_LINK }]);
+        // Join check OFF: Play Game button တစ်ခုပဲ ပြသမည်
         return { inline_keyboard: rows };
     }
 
@@ -2483,27 +2485,40 @@ function setupCommandHandlers() {
         );
     });
 
-    // /help - admin commands list
+    // /help - admin commands list (full)
     bot.onText(/\/help$/, async (msg) => {
         const chatId = msg.chat.id;
-        if (msg.from.id !== ADMIN_ID) return bot.sendMessage(chatId, '⛔ ဒီ command ကို Admin မှသာ သုံးလို့ရပါတယ်။');
+        if (msg.from.id !== ADMIN_ID) return safeSend(chatId, '⛔ ဒီ command ကို Admin မှသာ သုံးလို့ရပါတယ်။');
+        const joinStatus = CHANNEL_JOIN_REQUIRED ? '🟢 ON' : '🔴 OFF';
         await safeSend(chatId,
-            `👑 *Admin Commands*\n\n` +
-            `📢 *Channel စီမံခန့်ခွဲမှု*\n` +
-            `/setchannel [link] — Channel link ပြောင်းရန်\n` +
-            `   ဥပမာ: /setchannel https://t.me/NewChannel\n\n` +
-            `/on — Channel join check ဖွင့်ရန်\n` +
-            `/off — Channel join check ပိတ်ရန်\n` +
-            `/edit — Channel & Support link များ ပြင်ရန်\n` +
-            `/setsupport [url] — Support link ပြောင်းရန်\n` +
-            `/status — လက်ရှိ settings ကြည့်ရန်\n\n` +
-            `👤 *User စီမံခန့်ခွဲမှု*\n` +
-            `/admin — Admin panel ဖွင့်ရန်\n` +
-            `/reply [userId] [message] — User ကို reply ပေးရန်\n\n` +
-            `📌 *လက်ရှိ Settings*\n` +
-            `Channel: ${CHANNEL_URL}\n` +
-            `Support: ${SUPPORT_LINK}\n` +
-            `Join Check: ${CHANNEL_JOIN_REQUIRED ? '🟢 ON' : '🔴 OFF'}`,
+            `👑 *NoomCoin Bot — Admin Commands*\n` +
+            `${'─'.repeat(32)}\n\n` +
+
+            `📢 *Channel Commands*\n` +
+            `├ /on — Channel join စစ်ဆေးမှု ဖွင့်ရန်\n` +
+            `│   (users must join before using app)\n` +
+            `├ /off — Channel join စစ်ဆေးမှု ပိတ်ရန်\n` +
+            `│   (users can use app without joining)\n` +
+            `├ /setchannel [link] — Channel URL ပြောင်းရန်\n` +
+            `│   e.g. /setchannel https://t.me/MyChan\n` +
+            `└ /setsupport [link] — Support link ပြောင်းရန်\n` +
+            `    e.g. /setsupport https://t.me/MyAdmin\n\n` +
+
+            `🛠 *Bot Management*\n` +
+            `├ /admin — Admin Panel ဖွင့်ရန်\n` +
+            `├ /edit — Link များ ပြင်ဆင်ရန် guide\n` +
+            `├ /status — Bot လက်ရှိ status ကြည့်ရန်\n` +
+            `└ /help — ဒီ command list ပြသရန်\n\n` +
+
+            `👤 *User Management*\n` +
+            `└ /reply [userId] [msg] — User ကို message ပြန်ပို့ရန်\n` +
+            `    e.g. /reply 123456789 Hello!\n\n` +
+
+            `${'─'.repeat(32)}\n` +
+            `📌 *Current Status*\n` +
+            `• Join Check: ${joinStatus}\n` +
+            `• Channel: ${CHANNEL_URL}\n` +
+            `• Support: ${SUPPORT_LINK}`,
             { parse_mode: 'Markdown' }
         );
     });
