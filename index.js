@@ -218,6 +218,7 @@ const DEFAULT_CONFIG = {
     DAILY_COOLDOWN: 24 * 60 * 60 * 1000,
     CHANNEL_URL: 'https://t.me/NoomCoinads_bot',
     CHANNEL_JOIN_REQUIRED: true,
+    SUPPORT_LINK: 'https://t.me/NoomCoinads_bot',
     VPN_MODE: true, // true = VPN gate on, false = bypass VPN check
     MAINTENANCE_MODE: false,
     MAINTENANCE_MESSAGE: 'Site is under maintenance. Please check back later.',
@@ -1592,13 +1593,13 @@ const earnRouter = (function() {
 // reward loaded dynamically from DB config (TASK_REWARD), default 40
 const TASK_BASE = { maxCount: 4, watchCooldown: 60 * 1000, dailyCooldown: 10 * 60 * 1000 }; // 10-minute reset
 const VIDEO_TASK_LIMITS = {
-    task1: { ...TASK_BASE, reward: 40, blockId: '23898' },
-    task2: { ...TASK_BASE, reward: 40, blockId: '23919' },
-    task3: { ...TASK_BASE, reward: 40, blockId: '24540' },
-    task4: { ...TASK_BASE, reward: 40, blockId: '24541' },
-    task5: { ...TASK_BASE, reward: 40, blockId: '24542' },
-    task6: { ...TASK_BASE, reward: 40, blockId: '24543' },
-    task7: { ...TASK_BASE, reward: 40, blockId: '24544' }
+    task1: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
+    task2: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
+    task3: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
+    task4: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
+    task5: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
+    task6: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
+    task7: { ...TASK_BASE, reward: 40, blockId: 'task-34482' }
 };
 
 async function getEarnTaskReward() {
@@ -2160,7 +2161,7 @@ const ADMIN_PANEL_URL = 'https://noomcoin.vercel.app/admin.html';
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const API_BASE_URL = process.env.API_BASE_URL || 'https://noomcoinbackend.onrender.com';
 const SUPPORT_GROUP_ID = -1003748580479;
-const SUPPORT_LINK = 'https://t.me/NoomCoinads_bot';
+let SUPPORT_LINK = 'https://t.me/NoomCoinads_bot';
 
 if (!BOT_TOKEN || !ADMIN_ID) {
     console.error('❌ Missing Environment Variables!');
@@ -2217,6 +2218,9 @@ async function loadPersistedConfig() {
         if (res.data.CHANNEL_URL) {
             CHANNEL_URL = res.data.CHANNEL_URL;
         }
+        if (res.data.SUPPORT_LINK) {
+            SUPPORT_LINK = res.data.SUPPORT_LINK;
+        }
         console.log(`✅ Config loaded: joinRequired=${CHANNEL_JOIN_REQUIRED}, channel=${CHANNEL_URL}`);
     } catch (err) {
         console.error('⚠️ Could not load persisted config:', err.message);
@@ -2254,6 +2258,35 @@ async function checkChannelMembership(userId) {
 function setupCommandHandlers() {
     if (!bot) return;
 
+    // ── Safe send helper — swallows "bot blocked" and similar errors ──
+    async function safeSend(chatId, text, opts = {}) {
+        try {
+            return await bot.sendMessage(chatId, text, opts);
+        } catch (e) {
+            const msg = e.message || '';
+            if (msg.includes('bot was blocked') || msg.includes('user is deactivated') ||
+                msg.includes('chat not found') || msg.includes('Forbidden') ||
+                msg.includes('ETELEGRAM')) {
+                console.warn(`⚠️ safeSend: user ${chatId} blocked bot or unavailable`);
+            } else {
+                console.error('❌ safeSend error:', msg);
+            }
+            return null;
+        }
+    }
+
+    // ── Build /start keyboard based on CHANNEL_JOIN_REQUIRED ──
+    function startKeyboard(webAppUrl) {
+        const rows = [
+            [{ text: '🎮 Play Game', web_app: { url: webAppUrl } }]
+        ];
+        if (CHANNEL_JOIN_REQUIRED) {
+            rows.push([{ text: '📢 Join Channel', url: CHANNEL_URL }]);
+        }
+        rows.push([{ text: '💬 Admin ကိုဆက်သွယ်ရန်', url: SUPPORT_LINK }]);
+        return { inline_keyboard: rows };
+    }
+
     // /start with referral + channel join check
     bot.onText(/\/start(?:\s+(\d+))?/, async (msg, match) => {
         console.log('📩 /start command received from user:', msg.from.id);
@@ -2290,21 +2323,16 @@ function setupCommandHandlers() {
             }
 
             // ── Join ဖြစ်ပြီ သို့ join check ပိတ် ─ app ဖွင့်ပေး ──
-            await bot.sendMessage(chatId,
+            await safeSend(chatId,
                 `မင်္ဂလာပါ NoomCoin မှ ကြိုဆိုပါတယ်။ 🎉\n\nဂိမ်းဆော့ပြီးပိုက်ဆံရှာရန် အောက်က ခလုတ်ကို နှိပ်ပါ။`,
-                {
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: '🎮 Play Game', web_app: { url: webAppUrl } }],
-                            [{ text: '📢 Join Channel', url: CHANNEL_URL }],
-                            [{ text: '💬 Admin ကိုဆက်သွယ်ရန်', url: SUPPORT_LINK }]
-                        ]
-                    }
-                }
+                { reply_markup: startKeyboard(webAppUrl) }
             );
             console.log('✅ /start response sent to user:', chatId);
         } catch (err) {
-            console.error('❌ /start error:', err.message);
+            const em = err.message || '';
+            if (!em.includes('bot was blocked') && !em.includes('Forbidden')) {
+                console.error('❌ /start error:', em);
+            }
         }
     });
 
@@ -2344,17 +2372,9 @@ function setupCommandHandlers() {
                 try {
                     await bot.deleteMessage(chatId, query.message.message_id);
                 } catch(e) {}
-                await bot.sendMessage(chatId,
+                await safeSend(chatId,
                     `✅ Channel join စစ်ဆေးမှု အောင်မြင်ပါပြီ!\n\nမင်္ဂလာပါ NoomCoin မှ ကြိုဆိုပါတယ်။ 🎉\n\nဂိမ်းဆော့ပြီးပိုက်ဆံရှာရန် အောက်က ခလုတ်ကို နှိပ်ပါ။`,
-                    {
-                        reply_markup: {
-                            inline_keyboard: [
-                                [{ text: '🎮 Play Game', web_app: { url: webAppUrl } }],
-                                [{ text: '📢 Join Channel', url: CHANNEL_URL }],
-                                [{ text: '💬 Admin ကိုဆက်သွယ်ရန်', url: SUPPORT_LINK }]
-                            ]
-                        }
-                    }
+                    { reply_markup: startKeyboard(webAppUrl) }
                 );
             }
         }
@@ -2392,13 +2412,43 @@ function setupCommandHandlers() {
         console.log(`📢 Admin changed channel link to: ${CHANNEL_URL}`);
     });
 
+    // /edit - customize channel link & support link
+    bot.onText(/\/edit$/, async (msg) => {
+        const chatId = msg.chat.id;
+        if (msg.from.id !== ADMIN_ID) return safeSend(chatId, '⛔ Admin သာ သုံးနိုင်ပါသည်။');
+        await safeSend(chatId,
+            `✏️ *Edit Bot Links*\n\n` +
+            `📢 Channel link ပြောင်းရန်:\n` +
+            `\`/setchannel https://t.me/YourChannel\`\n\n` +
+            `💬 Support link ပြောင်းရန်:\n` +
+            `\`/setsupport https://t.me/YourSupport\`\n\n` +
+            `📌 *လက်ရှိ Links*\n` +
+            `Channel: ${CHANNEL_URL}\n` +
+            `Support: ${SUPPORT_LINK}`,
+            { parse_mode: 'Markdown' }
+        );
+    });
+
+    // /setsupport - change support link
+    bot.onText(/\/setsupport (.+)/, async (msg, match) => {
+        const chatId = msg.chat.id;
+        if (msg.from.id !== ADMIN_ID) return safeSend(chatId, '⛔ Admin သာ သုံးနိုင်ပါသည်။');
+        const newLink = match[1].trim();
+        if (!newLink.startsWith('https://') && !newLink.startsWith('http://')) {
+            return safeSend(chatId, '❌ Link format မှားနေသည်။\nဥပမာ: /setsupport https://t.me/MySupport');
+        }
+        SUPPORT_LINK = newLink;
+        await saveConfigToBackend('SUPPORT_LINK', SUPPORT_LINK);
+        await safeSend(chatId, `✅ Support link ပြောင်းပြီး!\n💬 Support: ${SUPPORT_LINK}`);
+    });
+
     // /off - channel join check ပိတ်မည်
     bot.onText(/\/off$/, async (msg) => {
         const chatId = msg.chat.id;
         if (msg.from.id !== ADMIN_ID) return bot.sendMessage(chatId, '⛔ ဒီ command ကို Admin မှသာ သုံးလို့ရပါတယ်။');
         CHANNEL_JOIN_REQUIRED = false;
         await saveConfigToBackend('CHANNEL_JOIN_REQUIRED', false);
-        await bot.sendMessage(chatId,
+        await safeSend(chatId,
             `✅ Channel Join Check ကို *ပိတ်လိုက်ပါပြီ*\n\n` +
             `User တွေ channel join မထားလည်း app သုံးလို့ ရပါပြီ။`,
             { parse_mode: 'Markdown' }
@@ -2412,7 +2462,7 @@ function setupCommandHandlers() {
         if (msg.from.id !== ADMIN_ID) return bot.sendMessage(chatId, '⛔ ဒီ command ကို Admin မှသာ သုံးလို့ရပါတယ်။');
         CHANNEL_JOIN_REQUIRED = true;
         await saveConfigToBackend('CHANNEL_JOIN_REQUIRED', true);
-        await bot.sendMessage(chatId,
+        await safeSend(chatId,
             `✅ Channel Join Check ကို *ဖွင့်လိုက်ပါပြီ*\n\n` +
             `User တွေ ${CHANNEL_URL} ကို join မှသာ app သုံးနိုင်မည်။`,
             { parse_mode: 'Markdown' }
@@ -2425,7 +2475,7 @@ function setupCommandHandlers() {
         const chatId = msg.chat.id;
         if (msg.from.id !== ADMIN_ID) return bot.sendMessage(chatId, '⛔ ဒီ command ကို Admin မှသာ သုံးလို့ရပါတယ်။');
         const joinStatus = CHANNEL_JOIN_REQUIRED ? '🟢 ON (Join လိုအပ်သည်)' : '🔴 OFF (Join မလိုဘူး)';
-        await bot.sendMessage(chatId,
+        await safeSend(chatId,
             `📊 *Bot Status*\n\n` +
             `📢 Channel: ${CHANNEL_URL}\n` +
             `🔧 Join Check: ${joinStatus}`,
@@ -2437,19 +2487,22 @@ function setupCommandHandlers() {
     bot.onText(/\/help$/, async (msg) => {
         const chatId = msg.chat.id;
         if (msg.from.id !== ADMIN_ID) return bot.sendMessage(chatId, '⛔ ဒီ command ကို Admin မှသာ သုံးလို့ရပါတယ်။');
-        await bot.sendMessage(chatId,
+        await safeSend(chatId,
             `👑 *Admin Commands*\n\n` +
             `📢 *Channel စီမံခန့်ခွဲမှု*\n` +
             `/setchannel [link] — Channel link ပြောင်းရန်\n` +
             `   ဥပမာ: /setchannel https://t.me/NewChannel\n\n` +
             `/on — Channel join check ဖွင့်ရန်\n` +
-            `/off — Channel join check ပိတ်ရန် (user တွေ join မလုပ်ဘဲ သုံးလို့ရ)\n` +
+            `/off — Channel join check ပိတ်ရန်\n` +
+            `/edit — Channel & Support link များ ပြင်ရန်\n` +
+            `/setsupport [url] — Support link ပြောင်းရန်\n` +
             `/status — လက်ရှိ settings ကြည့်ရန်\n\n` +
             `👤 *User စီမံခန့်ခွဲမှု*\n` +
             `/admin — Admin panel ဖွင့်ရန်\n` +
             `/reply [userId] [message] — User ကို reply ပေးရန်\n\n` +
             `📌 *လက်ရှိ Settings*\n` +
             `Channel: ${CHANNEL_URL}\n` +
+            `Support: ${SUPPORT_LINK}\n` +
             `Join Check: ${CHANNEL_JOIN_REQUIRED ? '🟢 ON' : '🔴 OFF'}`,
             { parse_mode: 'Markdown' }
         );
@@ -2469,11 +2522,11 @@ function setupCommandHandlers() {
                     `📝 *Message:*\n${msg.text}\n\n` +
                     `_Reply to this user by sending a message starting with /reply ${msg.from.id}_`;
                 await bot.sendMessage(SUPPORT_GROUP_ID, forwardMessage, { parse_mode: 'Markdown' });
-                await bot.sendMessage(msg.chat.id, '✅ သင့်စာကို Admin ထံ ပို့ပေးလိုက်ပါပြီ။ မကြာမီ အကြောင်းပြန်ပါမယ်။');
+                await safeSend(msg.chat.id, '✅ သင့်စာကို Admin ထံ ပို့ပေးလိုက်ပါပြီ။ မကြာမီ အကြောင်းပြန်ပါမယ်။');
                 console.log(`✅ Message from user ${msg.from.id} forwarded to group`);
             } catch (err) {
                 console.error('❌ Failed to forward message to group:', err.message);
-                await bot.sendMessage(msg.chat.id, '❌ စာပို့ရာတွင် အဆင်မပြေမှုရှိသွားပါသည်။ နောက်မှ ထပ်ကြိုးစားကြည့်ပါ။');
+                // Skip sending error message to avoid loop if user blocked bot
             }
         }
     });
@@ -2487,16 +2540,16 @@ function setupCommandHandlers() {
         const targetUserId = parseInt(match[1]);
         const replyMessage = match[2];
         try {
-            await bot.sendMessage(targetUserId,
+            await safeSend(targetUserId,
                 `📨 *Admin ထံမှ အကြောင်းပြန်စာ*\n\n${replyMessage}\n\n` +
                 `_ပြဿနာရှိပါက ထပ်မံမေးမြန်းနိုင်ပါတယ်။_`,
                 { parse_mode: 'Markdown' }
             );
-            await bot.sendMessage(chatId, `✅ စာကို ပြန်ပို့ပြီးပါပြီ။`);
+            await safeSend(chatId, `✅ စာကို ပြန်ပို့ပြီးပါပြီ။`);
             console.log(`📨 Admin replied to user ${targetUserId}`);
         } catch (err) {
             console.error(`❌ Failed to reply to user ${targetUserId}:`, err.message);
-            await bot.sendMessage(chatId, `❌ စာပြန်မရပါ။ User က Bot ကို block ထားတာ ဖြစ်နိုင်ပါတယ်။`);
+            await safeSend(chatId, `❌ စာပြန်မရပါ။ User က Bot ကို block ထားနိုင်ပါတယ်။`);
         }
     });
 
