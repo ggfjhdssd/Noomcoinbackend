@@ -1593,13 +1593,13 @@ const earnRouter = (function() {
 // reward loaded dynamically from DB config (TASK_REWARD), default 40
 const TASK_BASE = { maxCount: 4, watchCooldown: 60 * 1000, dailyCooldown: 10 * 60 * 1000 }; // 10-minute reset
 const VIDEO_TASK_LIMITS = {
-    task1: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
-    task2: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
-    task3: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
-    task4: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
-    task5: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
-    task6: { ...TASK_BASE, reward: 40, blockId: 'task-34482' },
-    task7: { ...TASK_BASE, reward: 40, blockId: 'task-34482' }
+    task1: { ...TASK_BASE, reward: 40, blockId: '34488' },
+    task2: { ...TASK_BASE, reward: 40, blockId: '34488' },
+    task3: { ...TASK_BASE, reward: 40, blockId: '34488' },
+    task4: { ...TASK_BASE, reward: 40, blockId: '34488' },
+    task5: { ...TASK_BASE, reward: 40, blockId: '34488' },
+    task6: { ...TASK_BASE, reward: 40, blockId: '34488' },
+    task7: { ...TASK_BASE, reward: 40, blockId: '34488' }
 };
 
 async function getEarnTaskReward() {
@@ -2195,11 +2195,36 @@ async function initializeBot() {
     await forceClearWebhook();
     await new Promise(resolve => setTimeout(resolve, 3000));
     try {
-        bot = new TelegramBot(BOT_TOKEN, { polling: true, onlyFirstMatch: true });
+        bot = new TelegramBot(BOT_TOKEN, {
+            polling: {
+                interval: 300,
+                autoStart: false,         // manual start after flushing
+                params: {
+                    timeout: 10,
+                    allowed_updates: ['message', 'callback_query'],
+                    // offset -1 fetches nothing but lets us get current update_id
+                }
+            },
+            onlyFirstMatch: true
+        });
+
+        // Flush any queued updates from before this deploy
+        try {
+            const updates = await bot.getUpdates({ offset: -1, timeout: 0 });
+            if (updates && updates.length > 0) {
+                const lastId = updates[updates.length - 1].update_id;
+                await bot.getUpdates({ offset: lastId + 1, timeout: 0 });
+                console.log(`🧹 Flushed ${updates.length} pending update(s)`);
+            }
+        } catch (e) {
+            console.warn('⚠️ Could not flush updates:', e.message);
+        }
+
+        setupCommandHandlers();
+        await bot.startPolling();
         isPolling = true;
         restartAttempts = 0;
         console.log('✅ Bot polling started');
-        setupCommandHandlers();
         const me = await bot.getMe();
         console.log(`🤖 Bot connected: @${me.username}`);
     } catch (err) {
@@ -2240,17 +2265,25 @@ async function saveConfigToBackend(key, value) {
 
 // ==================== Channel Join Check ====================
 async function checkChannelMembership(userId) {
-    if (!CHANNEL_JOIN_REQUIRED) return true; // join check ပိတ်ထားလျှင် skip
+    if (!CHANNEL_JOIN_REQUIRED) return true;
     try {
-        // Extract channel username from URL: https://t.me/NoomCoin → @NoomCoin
-        const urlParts = CHANNEL_URL.replace('https://t.me/', '').replace('http://t.me/', '').replace('t.me/', '');
+        const urlParts = CHANNEL_URL
+            .replace('https://t.me/', '')
+            .replace('http://t.me/', '')
+            .replace('t.me/', '');
         const channelUsername = '@' + urlParts.split('/')[0].split('?')[0];
         const member = await bot.getChatMember(channelUsername, userId);
-        const status = member.status;
-        return ['member', 'administrator', 'creator'].includes(status);
+        return ['member', 'administrator', 'creator'].includes(member.status);
     } catch (err) {
-        console.error('❌ Channel membership check failed:', err.message);
-        return true; // check fail ဖြစ်ရင် user ကို block မလုပ်ဘဲ ဆက်ခွင့်ပေး
+        const msg = err.message || '';
+        // "member not found" / "user not found" = user မ join ရသေးဘူး (normal)
+        if (msg.includes('member not found') || msg.includes('user not found') ||
+            msg.includes('PARTICIPANT_ID_INVALID')) {
+            return false; // not joined — show join prompt
+        }
+        // Other errors (channel not found, bot not admin, network) → let user through
+        console.warn('⚠️ Channel check error (letting user through):', msg);
+        return true;
     }
 }
 
