@@ -173,6 +173,10 @@ const userSchema = new mongoose.Schema({
     vipMode: { type: Boolean, default: false },
     vipExpiry: { type: Date, default: null },
     lastTaskReset: { type: Number, default: 0 }, // timestamp of last global task reset
+    clickerState: {
+        type: Object,
+        default: { tapLv:0, enLv:0, regenLv:0, autoLv:0 }
+    },
     gameSession: {
         active: { type: Boolean, default: false },
         startTime: { type: Number, default: 0 },
@@ -209,7 +213,8 @@ const VipPurchase = mongoose.model('VipPurchase', vipPurchaseSchema);
 
 // ==================== Default Configuration ====================
 const DEFAULT_CONFIG = {
-    REFERRAL_REWARD: 50,
+    REFERRAL_REWARD: 5000,
+    REF_MESSAGE: 'ဖုန်းလေးပွတ်ရင်း အပိုဝင်ငွေ ရှာချင်သူများအတွက် NoomCoin ရောက်ရှိနေပါပြီ🐻\nကျွန်တော့်ရဲ့ Link ကနေ ဝင်ဆော့ရုံနဲ့ သင် 5000ကျပ် ချက်ခြင်းရပြီး ပိုက်ဆံ တွေ စုပြီး ငွေထုတ်လို့ရပြီနော်! အခုပဲ စမ်းကြည့်လိုက်ပါ 👇',
     DAILY_REWARD: 24,
     TASK_REWARD: 40,
     HOME_TASK_REWARD: 45,
@@ -436,11 +441,12 @@ async function getOrCreateUser(tgUser, referrerId = null) {
         if (referrerId && parseInt(referrerId) !== tgUser.id) {
             const referrer = await User.findOne({ userId: parseInt(referrerId) });
             if (referrer) {
-                referrer.coins += 50;
+                const refReward = await getConfig('REFERRAL_REWARD') || 5000;
+                referrer.coins += refReward;
                 referrer.referralCount += 1;
                 referrer.unclaimedReferrals += 1;
                 await referrer.save();
-                console.log(`✅ Referrer ${referrer.userId} got +50 coins, referral count: ${referrer.referralCount}`);
+                console.log(`✅ Referrer ${referrer.userId} referral count: ${referrer.referralCount}`);
 
                 if (process.env.RENDER_BOT_URL) {
                     axios.post(`${process.env.RENDER_BOT_URL}/referral-notify`, {
@@ -575,17 +581,19 @@ app.get('/api/check-vpn', async (req, res) => {
         const data = response.data;
         
         if (data.status === 'success') {
-            const allowed = data.countryCode === 'SG' || data.countryCode === 'US';
+            // Block Myanmar (MM) and China (CN) - they must use VPN
+            const BLOCKED_COUNTRIES = ['MM', 'CN'];
+            const allowed = !BLOCKED_COUNTRIES.includes(data.countryCode);
             return res.json({
                 allowed: allowed,
                 country: data.country,
                 countryCode: data.countryCode,
                 isAdmin: false,
                 isBypassed: false,
-                message: allowed ? 'Access granted' : 'Only Singapore or United States VPN allowed'
+                message: allowed ? 'Access granted' : 'Myanmar နှင့် China မှ ဝင်ရောက်မှုကို ပိတ်ထားပါသည်။ VPN သုံး၍ ဝင်ပါ'
             });
         } else {
-            // Fallback - allow if we can't determine
+            // Fallback - allow if IP lookup fails
             return res.json({
                 allowed: true,
                 country: 'Unknown',
@@ -872,6 +880,7 @@ app.get('/api/ui-config', async (req, res) => {
         const result = {};
         const keys = [
             'VIP_CARD_VISIBLE', 'CURRENCY_MODE', 'VPN_MODE',
+            'REF_MESSAGE',
             'CHANNEL_URL', 'CHANNEL_JOIN_REQUIRED',
             'DAILY_CHECKIN_LABEL', 'DAILY_CHECKIN_REWARD_LABEL',
             'TASK1_LABEL', 'TASK1_REWARD_LABEL', 'TASK1_BTN_LABEL',
@@ -988,6 +997,29 @@ app.post('/api/admin/broadcast', adminMiddleware, async (req, res) => {
     } catch (err) {
         console.error('❌ Broadcast error:', err);
         // res already sent above if users found
+    }
+});
+
+// ── /api/user/referrals — list users referred by me ──
+app.get('/api/user/referrals', authMiddleware, async (req, res) => {
+    try {
+        await connectToDatabase();
+        const me = req.tgUser.id;
+        const refs = await User.find({ referredBy: me })
+            .select('userId username firstName photoUrl createdAt')
+            .sort({ createdAt: -1 })
+            .limit(50)
+            .lean();
+        const list = refs.map(u => {
+            const name = u.username || u.firstName || `User${String(u.userId).slice(-4)}`;
+            // Mask middle chars: yoonthitsar → y***r
+            const masked = name.length <= 2 ? name :
+                name[0] + '***' + name[name.length - 1];
+            return { masked, photo: u.photoUrl || null, joinedAt: u.createdAt };
+        });
+        res.json({ success: true, list, total: list.length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -2115,12 +2147,24 @@ R.post('/coin-end', async (req, res) => {
 
 
         // ==================== COIN CLICKER ====================
+        // GET clicker state - load saved upgrade levels
+        R.get('/clicker-state', async (req, res) => {
+            try {
+                await connectToDatabase();
+                const user = await User.findOne({ userId: req.tgUser.id }).lean();
+                if (!user) return res.status(404).json({ error: 'User not found' });
+                // Store clicker state in user.gameSession or a dedicated field
+                const state = user.clickerState || { tapLv:0, enLv:0, regenLv:0, autoLv:0 };
+                res.json({ success: true, state });
+            } catch (err) { res.status(500).json({ error: err.message }); }
+        });
+
         R.post('/clicker-cashout', async (req, res) => {
             try {
                 await connectToDatabase();
                 const { coins } = req.body;
-                if (!coins || coins <= 0 || coins > 5000) {
-                    return res.status(400).json({ error: 'Invalid coin amount (max 5000 per session)' });
+                if (!coins || coins <= 0 || coins > 100000) {
+                    return res.status(400).json({ error: 'Invalid coin amount' });
                 }
                 const user = await User.findOne({ userId: req.tgUser.id });
                 if (!user) return res.status(404).json({ error: 'User not found' });
@@ -2133,12 +2177,15 @@ R.post('/coin-end', async (req, res) => {
         R.post('/clicker-upgrade', async (req, res) => {
             try {
                 await connectToDatabase();
-                const { cost } = req.body;
-                if (!cost || cost <= 0) return res.status(400).json({ error: 'Invalid cost' });
+                const { cost, state } = req.body;
                 const user = await User.findOne({ userId: req.tgUser.id });
                 if (!user) return res.status(404).json({ error: 'User not found' });
-                if (user.coins < cost) return res.status(400).json({ error: 'Not enough coins' });
-                user.coins -= Math.floor(cost);
+                if (cost > 0) {
+                    if (user.coins < cost) return res.status(400).json({ error: 'Not enough coins' });
+                    user.coins -= Math.floor(cost);
+                }
+                // Save clicker upgrade state
+                if (state) user.clickerState = state;
                 await user.save();
                 res.json({ success: true, newCoins: user.coins });
             } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2162,6 +2209,7 @@ const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 const API_BASE_URL = process.env.API_BASE_URL || 'https://noomcoinbackend.onrender.com';
 const SUPPORT_GROUP_ID = -1003748580479;
 let SUPPORT_LINK = 'https://t.me/NoomCoinads_bot';
+let REF_MESSAGE = 'ဖုန်းလေးပွတ်ရင်း အပိုဝင်ငွေ ရှာချင်သူများအတွက် NoomCoin ရောက်ရှိနေပါပြီ🐻\nကျွန်တော့်ရဲ့ Link ကနေ ဝင်ဆော့ရုံနဲ့ သင် 5000ကျပ် ချက်ခြင်းရပြီး ပိုက်ဆံ တွေ စုပြီး ငွေထုတ်လို့ရပြီနော်! အခုပဲ စမ်းကြည့်လိုက်ပါ 👇';
 
 if (!BOT_TOKEN || !ADMIN_ID) {
     console.error('❌ Missing Environment Variables!');
@@ -2245,6 +2293,9 @@ async function loadPersistedConfig() {
         }
         if (res.data.SUPPORT_LINK) {
             SUPPORT_LINK = res.data.SUPPORT_LINK;
+        }
+        if (res.data.REF_MESSAGE) {
+            REF_MESSAGE = res.data.REF_MESSAGE;
         }
         console.log(`✅ Config loaded: joinRequired=${CHANNEL_JOIN_REQUIRED}, channel=${CHANNEL_URL}`);
     } catch (err) {
@@ -2518,6 +2569,36 @@ function setupCommandHandlers() {
         );
     });
 
+    // /editref - edit referral invite message
+    bot.onText(/\/editref$/, async (msg) => {
+        const chatId = msg.chat.id;
+        if (msg.from.id !== ADMIN_ID) return safeSend(chatId, '⛔ Admin သာ သုံးနိုင်ပါသည်။');
+        const currentMsg = REF_MESSAGE || 'Default ref message';
+        await safeSend(chatId,
+            `✏️ *Referral Message ပြောင်းရန်*\n\n` +
+            `လက်ရှိ message:\n\`${currentMsg.slice(0, 100)}...\`\n\n` +
+            `ပြောင်းရန် အောက်ပါပုံစံနဲ့ reply ပေးပါ:\n` +
+            `\`/setref [သင့်စာသား]\`\n\n` +
+            `Note: {link} ဟူသောနေရာတွင် user link အလိုအလျောက်ထည့်မည်`,
+            { parse_mode: 'Markdown' }
+        );
+    });
+
+    // /setref - set referral message
+    bot.onText(/\/setref (.+)/s, async (msg, match) => {
+        const chatId = msg.chat.id;
+        if (msg.from.id !== ADMIN_ID) return safeSend(chatId, '⛔ Admin သာ သုံးနိုင်ပါသည်။');
+        const newMsg = match[1].trim();
+        if (!newMsg || newMsg.length < 10) {
+            return safeSend(chatId, '❌ စာသားအနည်းဆုံး 10 လုံးထည့်ပါ');
+        }
+        REF_MESSAGE = newMsg;
+        await saveConfigToBackend('REF_MESSAGE', REF_MESSAGE);
+        await safeSend(chatId,
+            `✅ Referral message ပြောင်းပြီးပါပြီ!\n\n📝 Preview:\n${newMsg.slice(0,200)}`,
+        );
+    });
+
     // /help - admin commands list (full)
     bot.onText(/\/help$/, async (msg) => {
         const chatId = msg.chat.id;
@@ -2529,13 +2610,14 @@ function setupCommandHandlers() {
 
             `📢 *Channel Commands*\n` +
             `├ /on — Channel join စစ်ဆေးမှု ဖွင့်ရန်\n` +
-            `│   (users must join before using app)\n` +
             `├ /off — Channel join စစ်ဆေးမှု ပိတ်ရန်\n` +
-            `│   (users can use app without joining)\n` +
             `├ /setchannel [link] — Channel URL ပြောင်းရန်\n` +
-            `│   e.g. /setchannel https://t.me/MyChan\n` +
-            `└ /setsupport [link] — Support link ပြောင်းရန်\n` +
-            `    e.g. /setsupport https://t.me/MyAdmin\n\n` +
+            `└ /setsupport [link] — Support link ပြောင်းရန်\n\n` +
+
+            `✏️ *Message Commands*\n` +
+            `├ /editref — Referral invite message ကြည့်ရန်\n` +
+            `└ /setref [message] — Referral message ပြောင်းရန်\n` +
+            `    {link} သုံးရင် user link အလိုအလျောက်ထည့်မည်\n\n` +
 
             `🛠 *Bot Management*\n` +
             `├ /admin — Admin Panel ဖွင့်ရန်\n` +
@@ -2544,8 +2626,7 @@ function setupCommandHandlers() {
             `└ /help — ဒီ command list ပြသရန်\n\n` +
 
             `👤 *User Management*\n` +
-            `└ /reply [userId] [msg] — User ကို message ပြန်ပို့ရန်\n` +
-            `    e.g. /reply 123456789 Hello!\n\n` +
+            `└ /reply [userId] [msg] — User ကို message ပြန်ပို့ရန်\n\n` +
 
             `${'─'.repeat(32)}\n` +
             `📌 *Current Status*\n` +
@@ -2837,6 +2918,17 @@ async function startBot() {
     await initializeBot();
     await loadPersistedConfig();
     console.log('🤖 NoomCoin Bot started alongside API server');
+
+    // Keep-alive: ping self every 4 minutes to prevent Render sleep
+    const SELF_URL = process.env.RENDER_BOT_URL || 'https://noomcoinbackend.onrender.com';
+    setInterval(async () => {
+        try {
+            await axios.get(`${SELF_URL}/api/health`, { timeout: 8000 });
+            console.log('💓 Keep-alive ping OK');
+        } catch (e) {
+            // ignore - just keep trying
+        }
+    }, 4 * 60 * 1000); // every 4 min
 }
 
 module.exports = { app, startBot };
