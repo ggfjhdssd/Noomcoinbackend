@@ -880,7 +880,7 @@ app.get('/api/ui-config', async (req, res) => {
         const result = {};
         const keys = [
             'VIP_CARD_VISIBLE', 'CURRENCY_MODE', 'VPN_MODE',
-            'REF_MESSAGE',
+            'REF_MESSAGE', 'MIN_WITHDRAWAL',
             'CHANNEL_URL', 'CHANNEL_JOIN_REQUIRED',
             'DAILY_CHECKIN_LABEL', 'DAILY_CHECKIN_REWARD_LABEL',
             'TASK1_LABEL', 'TASK1_REWARD_LABEL', 'TASK1_BTN_LABEL',
@@ -1093,12 +1093,29 @@ app.post('/api/admin/withdrawals/:id/approve', adminMiddleware, async (req, res)
         withdrawal.status = 'completed';
         await withdrawal.save();
 
-        await notifyBot('/withdrawal-notify', {
-            userId: withdrawal.userId,
-            amount: withdrawal.amount,
-            method: withdrawal.method,
-            status: 'completed'
-        });
+        // Notify user directly via bot
+        try {
+            const isMmk = (await getConfig('CURRENCY_MODE')) === 'mmk';
+            const symbol = isMmk ? 'ကျပ်' : '🪙';
+            const now = new Date().toLocaleString('my-MM', {
+                year:'numeric', month:'long', day:'numeric',
+                hour:'2-digit', minute:'2-digit'
+            });
+            const msg =
+                `🎊 *ငွေထုတ်ယူမှု အောင်မြင်ပါသည်* 🎊\n\n` +
+                `သင်၏ ငွေလွှဲအကောင့်ထဲသို့ ငွေများ လွှဲပြောင်းပေးပြီး ဖြစ်ပါသည်။ 💸\n\n` +
+                `📝 *အချက်အလက်:*\n━━━━━━━━━━━━━━━\n` +
+                `💰 *ပမာဏ:* \`${withdrawal.amount}${symbol}\`\n` +
+                `🏦 *နည်းလမ်း:* ${(withdrawal.method||'').toUpperCase()}\n` +
+                `📱 *အကောင့်:* ${withdrawal.accountDetails||''}\n` +
+                `🕒 *အချိန်:* ${now}\n━━━━━━━━━━━━━━━\n\n` +
+                `NoomCoin ကို ယုံကြည်အသုံးပြုပေးသည့်အတွက် ကျေးဇူးတင်ပါသည်။ 🎮✨`;
+            if (typeof bot !== 'undefined' && bot && isPolling) {
+                await bot.sendMessage(withdrawal.userId, msg, { parse_mode: 'Markdown' });
+            }
+        } catch(notifyErr) {
+            console.warn('⚠️ Withdrawal notify failed:', notifyErr.message);
+        }
 
         res.json({ success: true });
     } catch (err) {
@@ -1122,13 +1139,26 @@ app.post('/api/admin/withdrawals/:id/reject', adminMiddleware, async (req, res) 
         withdrawal.rejectReason = reason || null;
         await withdrawal.save();
 
-        await notifyBot('/withdrawal-notify', {
-            userId: withdrawal.userId,
-            amount: withdrawal.amount,
-            method: withdrawal.method,
-            status: 'rejected',
-            reason: reason || 'No reason provided'
-        });
+        // Notify user directly via bot
+        try {
+            const isMmk = (await getConfig('CURRENCY_MODE')) === 'mmk';
+            const symbol = isMmk ? 'ကျပ်' : '🪙';
+            const now = new Date().toLocaleString('my-MM', {
+                year:'numeric', month:'long', day:'numeric',
+                hour:'2-digit', minute:'2-digit'
+            });
+            const rejectMsg =
+                `❌ *ငွေထုတ်ယူမှု ငြင်းပယ်ခံရပါသည်*\n\n` +
+                `⚠️ *အကြောင်းပြချက်:* \n\`${reason || 'အကြောင်းပြချက် မရှိပါ'}\`\n\n` +
+                `💰 *ပြန်အမ်းငွေ:* \`${withdrawal.amount}${symbol}\` သင့်အကောင့်သို့ ပြန်ထည့်ပြီးပါပြီ။\n\n` +
+                `🕒 *အချိန်:* ${now}\n\n` +
+                `နောက်တစ်ကြိမ် ပြန်လည်တောင်းဆိုနိုင်ပါသည်။`;
+            if (typeof bot !== 'undefined' && bot && isPolling) {
+                await bot.sendMessage(withdrawal.userId, rejectMsg, { parse_mode: 'Markdown' });
+            }
+        } catch(notifyErr) {
+            console.warn('⚠️ Reject notify failed:', notifyErr.message);
+        }
 
         res.json({ success: true });
     } catch (err) {
