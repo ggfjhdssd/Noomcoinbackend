@@ -219,7 +219,7 @@ const DEFAULT_CONFIG = {
     TASK_REWARD: 40,
     HOME_TASK_REWARD: 45,
     MIN_WITHDRAWAL: parseInt(process.env.MIN_WITHDRAWAL) || 100000,
-    TASK_COOLDOWN: 15 * 60 * 1000, // 15 minutes
+    TASK_COOLDOWN: 20 * 60 * 1000, // 20 minutes
     DAILY_COOLDOWN: 24 * 60 * 60 * 1000,
     CHANNEL_URL: 'https://t.me/NoomCoinads_bot',
     CHANNEL_JOIN_REQUIRED: true,
@@ -1681,15 +1681,22 @@ const earnRouter = (function() {
 
 // ==================== Task 7 ခု, maxCount=4, between-watch cooldown=1min, reset=10min ====================
 // reward loaded dynamically from DB config (TASK_REWARD), default 40
-const TASK_BASE = { maxCount: 4, watchCooldown: 60 * 1000, dailyCooldown: 10 * 60 * 1000 }; // 10-minute reset
+// watchCooldown = 6s between each watch, dailyCooldown = 1hr reset after 4/4
+const TASK_BASE = { maxCount: 4, watchCooldown: 6 * 1000, dailyCooldown: 60 * 60 * 1000 };
 const VIDEO_TASK_LIMITS = {
-    task1: { ...TASK_BASE, reward: 40, blockId: '34488' },
-    task2: { ...TASK_BASE, reward: 40, blockId: '34488' },
-    task3: { ...TASK_BASE, reward: 40, blockId: '34488' },
-    task4: { ...TASK_BASE, reward: 40, blockId: '34488' },
-    task5: { ...TASK_BASE, reward: 40, blockId: '34488' },
-    task6: { ...TASK_BASE, reward: 40, blockId: '34488' },
-    task7: { ...TASK_BASE, reward: 40, blockId: '34488' }
+    // Earn tab IDs (video1-4)
+    video1: { ...TASK_BASE, reward: 45, blockId: '34488' },
+    video2: { ...TASK_BASE, reward: 45, blockId: '34488' },
+    video3: { ...TASK_BASE, reward: 45, blockId: '34488' },
+    video4: { ...TASK_BASE, reward: 45, blockId: '34488' },
+    // Legacy IDs (task1-7) kept for backward compat
+    task1: { ...TASK_BASE, reward: 45, blockId: '34488' },
+    task2: { ...TASK_BASE, reward: 45, blockId: '34488' },
+    task3: { ...TASK_BASE, reward: 45, blockId: '34488' },
+    task4: { ...TASK_BASE, reward: 45, blockId: '34488' },
+    task5: { ...TASK_BASE, reward: 45, blockId: '34488' },
+    task6: { ...TASK_BASE, reward: 45, blockId: '34488' },
+    task7: { ...TASK_BASE, reward: 45, blockId: '34488' }
 };
 
 async function getEarnTaskReward() {
@@ -1775,12 +1782,13 @@ R.post('/video', async (req, res) => {
     try {
         if (!req.tgUser) return res.status(401).json({ error: 'User not authenticated' });
 
-        const { taskId, amount } = req.body;
-        if (!taskId || !VALID_TASK_IDS.includes(taskId)) return res.status(400).json({ error: 'Invalid task ID' });
+        const { taskId } = req.body;
+        if (!taskId || !VALID_TASK_IDS.includes(taskId)) {
+            return res.status(400).json({ error: 'Invalid task ID: ' + taskId });
+        }
 
         const cfg = VIDEO_TASK_LIMITS[taskId];
         const liveReward = await getEarnTaskReward();
-        if (amount !== liveReward) return res.status(400).json({ error: 'Invalid reward amount' });
 
         const User = mongoose.model('User');
         const user = await User.findOne({ userId: req.tgUser.id });
