@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://noomcoinbackend.onrender.com/api/$1"
+    },
+    { "source": "/admin",      "destination": "/admin.html" },
+    { "source": "/admin.html", "destination": "/admin.html" },
+    { "source": "/",           "destination": "/index.html" },
+    { "source": "/(.*)",       "destination": "/$1" }
+  ]
+}
