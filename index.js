@@ -764,69 +764,97 @@ app.post('/api/claim/task/:taskId', authMiddleware, maintenanceCheck, claimLimit
 });
 
 // ==================== Adsgram Reward Endpoint ====================
+// Legacy GET (keep for compatibility)
 app.get('/api/adsgram-reward', async (req, res) => {
     try {
         await connectToDatabase();
         const { userId, type, taskId } = req.query;
-
-        if (!userId || !type) {
-            return res.status(400).send('Missing userId or type parameter');
-        }
-
+        if (!userId || !type) return res.status(400).json({ error: 'Missing params' });
         const userIdNum = parseInt(userId);
-        if (isNaN(userIdNum)) {
-            return res.status(400).send('Invalid userId');
-        }
-
         const user = await User.findOne({ userId: userIdNum });
-        if (!user) {
-            console.warn(`⚠️ User not found for userId: ${userIdNum}`);
-            return res.status(404).send('User not found');
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        const now = Date.now();
+        let reward = 0;
+        if (type === 'daily') {
+            const cooldown = await getConfig('DAILY_COOLDOWN');
+            if (now - (user.dailyLastClaim||0) < cooldown)
+                return res.status(400).json({ error: 'Cooldown active' });
+            reward = await getConfig('DAILY_REWARD');
+            user.dailyLastClaim = now;
+        } else if (type === 'task' || type === 'home_task') {
+            const tid = taskId || '';
+            const cooldown = await getConfig('TASK_COOLDOWN');
+            const lastClaim = user.tasks.get(tid) || 0;
+            if (now - lastClaim < cooldown - 5000)
+                return res.status(400).json({ error: 'Cooldown active' });
+            reward = await getConfig(type === 'home_task' ? 'HOME_TASK_REWARD' : 'TASK_REWARD');
+            user.tasks.set(tid, now);
+        } else {
+            return res.status(400).json({ error: 'Invalid type' });
         }
+        user.coins += reward;
+        await user.save();
+        res.json({ success: true, reward, newBalance: user.coins });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST version (used by frontend)
+app.post('/api/adsgram-reward', authMiddleware, async (req, res) => {
+    try {
+        await connectToDatabase();
+        const { type, taskId } = req.body;
+        if (!type) return res.status(400).json({ error: 'Missing type' });
+
+        const user = await User.findOne({ userId: req.tgUser.id });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        if (user.banned) return res.status(403).json({ error: 'Banned' });
+
+        // Ensure tasks Map is initialized
+        if (!user.tasks) user.tasks = new Map();
 
         const now = Date.now();
         let reward = 0;
-        let cooldownTime = 0;
 
         if (type === 'daily') {
-            cooldownTime = await getConfig('DAILY_COOLDOWN');
-            if (now - (user.dailyLastClaim || 0) < cooldownTime) {
-                return res.status(400).send('Daily check-in is on cooldown');
+            const cooldown = await getConfig('DAILY_COOLDOWN');
+            const lastClaim = user.dailyLastClaim || 0;
+            if (now - lastClaim < cooldown) {
+                const remaining = Math.ceil((cooldown - (now - lastClaim)) / 60000);
+                return res.status(400).json({ error: `Daily cooldown — ${remaining} မိနစ်နောက် ပြန်ယူပါ` });
             }
             reward = await getConfig('DAILY_REWARD');
             user.dailyLastClaim = now;
-        } else if (type === 'task') {
-            if (!taskId || !VALID_TASK_IDS.includes(taskId)) {
-                return res.status(400).send('Invalid task ID');
+
+        } else if (type === 'home_task') {
+            const tid = taskId || '';
+            if (!tid) return res.status(400).json({ error: 'Missing taskId' });
+            const cooldown = await getConfig('TASK_COOLDOWN');
+            // Safe Map access
+            const lastClaim = (user.tasks instanceof Map)
+                ? (user.tasks.get(tid) || 0)
+                : (user.tasks[tid] || 0);
+            if (now - lastClaim < cooldown - 5000) {
+                const remaining = Math.ceil((cooldown - (now - lastClaim)) / 60000);
+                return res.status(400).json({ error: `Cooldown — ${remaining} မိနစ်နောက် ပြန်ယူပါ` });
             }
-            cooldownTime = await getConfig('TASK_COOLDOWN');
-            const lastClaim = user.tasks.get(taskId) || 0;
-            // Grace buffer of 5 seconds to account for frontend/backend clock drift
-            // and the time the user spends watching the ad after the pre-check passes.
-            const GRACE_MS = 5000;
-            if (now - lastClaim < cooldownTime - GRACE_MS) {
-                return res.status(400).send('Task is on cooldown');
-            }
-            // Use HOME_TASK_REWARD if request comes from home tab
-            const source = req.query.source || '';
-            if (source === 'home') {
-                reward = await getConfig('HOME_TASK_REWARD');
+            reward = await getConfig('HOME_TASK_REWARD');
+            if (user.tasks instanceof Map) {
+                user.tasks.set(tid, now);
             } else {
-                reward = await getConfig('TASK_REWARD');
+                user.tasks = new Map([[tid, now]]);
             }
-            user.tasks.set(taskId, now);
+
         } else {
-            return res.status(400).send('Invalid reward type');
+            return res.status(400).json({ error: 'Invalid type: ' + type });
         }
 
-        user.coins += reward;
+        user.coins = parseFloat((parseFloat(user.coins || 0) + reward).toFixed(3));
         await user.save();
-
-        console.log(`✅ User ${userIdNum} rewarded with ${reward} coins for ${type} ${taskId || ''}. New balance: ${user.coins}`);
-        res.status(200).send('OK');
-    } catch (error) {
-        console.error('❌ Error in /api/adsgram-reward:', error);
-        res.status(500).send('Internal Server Error');
+        console.log(`✅ adsgram-reward POST: user ${user.userId} +${reward} (${type})`);
+        res.json({ success: true, reward, newBalance: user.coins });
+    } catch(e) {
+        console.error('❌ adsgram-reward POST error:', e);
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -2183,8 +2211,7 @@ R.post('/coin-end', async (req, res) => {
                 await connectToDatabase();
                 const user = await User.findOne({ userId: req.tgUser.id }).lean();
                 if (!user) return res.status(404).json({ error: 'User not found' });
-                // Store clicker state in user.gameSession or a dedicated field
-                const state = user.clickerState || { tapLv:0, enLv:0, regenLv:0, autoLv:0 };
+                const state = user.clickerState || { tapLv:0, enLv:0, regenLv:0, autoLv:0, sessionCoins:0 };
                 res.json({ success: true, state });
             } catch (err) { res.status(500).json({ error: err.message }); }
         });
@@ -2192,15 +2219,51 @@ R.post('/coin-end', async (req, res) => {
         R.post('/clicker-cashout', async (req, res) => {
             try {
                 await connectToDatabase();
-                const { coins } = req.body;
-                if (!coins || coins <= 0 || coins > 100000) {
-                    return res.status(400).json({ error: 'Invalid coin amount' });
+                const { coins, millicoins } = req.body;
+
+                // Accept millicoins (session × 1000) for decimal precision
+                // e.g. session=0.038 → millicoins=38 → finalCoins=0.038
+                let finalCoins = 0;
+                if (millicoins !== undefined && millicoins !== null) {
+                    const mc = parseFloat(millicoins);
+                    if (isNaN(mc) || mc <= 0) {
+                        return res.status(400).json({ error: 'Coins မလုံပါ — ထပ် tap ပါ' });
+                    }
+                    finalCoins = Math.round(mc) / 1000; // 38 → 0.038
+                } else if (coins !== undefined && coins !== null) {
+                    finalCoins = parseFloat(coins);
+                    if (isNaN(finalCoins) || finalCoins <= 0) {
+                        return res.status(400).json({ error: 'Coins မလုံပါ' });
+                    }
+                } else {
+                    return res.status(400).json({ error: 'Missing coins' });
                 }
+
                 const user = await User.findOne({ userId: req.tgUser.id });
                 if (!user) return res.status(404).json({ error: 'User not found' });
-                user.coins += Math.floor(coins);
+                user.coins = parseFloat((parseFloat(user.coins || 0) + finalCoins).toFixed(3));
                 await user.save();
-                res.json({ success: true, coinsAdded: Math.floor(coins), newTotal: user.coins });
+                console.log(`✅ Clicker cashout: user ${user.userId} +${finalCoins} → ${user.coins}`);
+                res.json({ success: true, coinsAdded: finalCoins, newTotal: user.coins });
+            } catch (err) {
+                console.error('❌ clicker-cashout error:', err);
+                res.status(500).json({ error: err.message });
+            }
+        });
+
+        // Save session progress (called every 10s auto-save)
+        R.post('/clicker-session', async (req, res) => {
+            try {
+                await connectToDatabase();
+                const { sessionCoins, energy } = req.body;
+                const user = await User.findOne({ userId: req.tgUser.id });
+                if (!user) return res.status(404).json({ error: 'User not found' });
+                if (!user.clickerState) user.clickerState = { tapLv:0, enLv:0, regenLv:0, autoLv:0 };
+                user.clickerState.sessionCoins = parseFloat(sessionCoins) || 0;
+                user.clickerState.energy = parseFloat(energy) || 0;
+                user.markModified('clickerState');
+                await user.save();
+                res.json({ success: true });
             } catch (err) { res.status(500).json({ error: err.message }); }
         });
 
@@ -2214,8 +2277,16 @@ R.post('/coin-end', async (req, res) => {
                     if (user.coins < cost) return res.status(400).json({ error: 'Not enough coins' });
                     user.coins -= Math.floor(cost);
                 }
-                // Save clicker upgrade state
-                if (state) user.clickerState = state;
+                // Save clicker upgrade + session state
+                if (state) {
+                    user.clickerState = {
+                        tapLv:   state.tapLv   || 0,
+                        enLv:    state.enLv    || 0,
+                        regenLv: state.regenLv || 0,
+                        autoLv:  state.autoLv  || 0,
+                        sessionCoins: parseFloat(state.sessionCoins) || 0
+                    };
+                }
                 await user.save();
                 res.json({ success: true, newCoins: user.coins });
             } catch (err) { res.status(500).json({ error: err.message }); }
